@@ -18,31 +18,48 @@ from shared_chat_store import create_shared_chat, get_shared_chat
 from auth_store import register_user, login_user
 
 
+# Initialize Flask application
 app = Flask(__name__)
 
-# Session configuration
-app.secret_key = os.getenv(
-    "FLASK_SECRET_KEY",
-    "studymate-development-secret-change-before-deployment"
-)
 
+# Environment configuration
+IS_PRODUCTION = os.getenv("FLASK_ENVIRONMENT") == "production"
+
+SECRET_KEY = os.getenv("FLASK_SECRET_KEY")
+
+if IS_PRODUCTION and not SECRET_KEY:
+    raise RuntimeError("FLASK_SECRET_KEY is required in production.")
+
+app.secret_key = SECRET_KEY or "studymate-local-development-secret"
+
+
+# Session cookie configuration
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=False  # Local development only
+    SESSION_COOKIE_SAMESITE="None" if IS_PRODUCTION else "Lax",
+    SESSION_COOKIE_SECURE=IS_PRODUCTION
 )
+
+
+# CORS configuration
+frontend_url = os.getenv("FRONTEND_URL", "").rstrip("/")
+
+allowed_origins = [
+    "http://127.0.0.1:5173",
+    "http://localhost:5173"
+]
+
+if frontend_url:
+    allowed_origins.append(frontend_url)
 
 CORS(
     app,
-    origins=[
-        "http://127.0.0.1:5173",
-        "http://localhost:5173"
-    ],
+    origins=allowed_origins,
     supports_credentials=True
 )
 
 
-# Check whether user is logged in
+# Authentication decorator
 def login_required(func):
 
     @wraps(func)
@@ -125,7 +142,7 @@ def signup():
         }), 500
 
 
-# Login API - Create Flask Session
+# Login API
 @app.route("/api/login", methods=["POST"])
 def login():
 
@@ -147,7 +164,6 @@ def login():
                 "error": "Invalid email or password"
             }), 401
 
-        # Clear old session and create new session
         session.clear()
 
         session["user_id"] = user["id"]
@@ -189,7 +205,7 @@ def current_user():
     }), 200
 
 
-# Logout API - Destroy Session
+# Logout API
 @app.route("/api/logout", methods=["POST"])
 def logout():
 
@@ -208,19 +224,28 @@ def upload_pdf():
 
     try:
         if "file" not in request.files:
-            return jsonify({"error": "No PDF file received"}), 400
+            return jsonify({
+                "error": "No PDF file received"
+            }), 400
 
         file = request.files["file"]
 
         if file.filename == "":
-            return jsonify({"error": "No file selected"}), 400
+            return jsonify({
+                "error": "No file selected"
+            }), 400
 
         if not file.filename.lower().endswith(".pdf"):
-            return jsonify({"error": "Only PDF files are allowed"}), 400
+            return jsonify({
+                "error": "Only PDF files are allowed"
+            }), 400
 
         pdf_bytes = file.read()
 
-        result = process_pdf(pdf_bytes, file.filename)
+        result = process_pdf(
+            pdf_bytes,
+            file.filename
+        )
 
         return jsonify({
             "status": "success",
@@ -234,10 +259,12 @@ def upload_pdf():
 
         print("PDF Upload Error:", str(e))
 
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": str(e)
+        }), 500
 
 
-# Chat API with Server-Sent Events - Login Required
+# Chat API - Streaming Response
 @app.route("/api/chat", methods=["POST"])
 @login_required
 def chat():
@@ -256,15 +283,21 @@ def chat():
         try:
             for chunk in stream_question(question):
 
-                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+                yield (
+                    f"data: {json.dumps({'chunk': chunk})}\n\n"
+                )
 
-            yield f"data: {json.dumps({'done': True})}\n\n"
+            yield (
+                f"data: {json.dumps({'done': True})}\n\n"
+            )
 
         except Exception as e:
 
             print("Streaming Error:", str(e))
 
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield (
+                f"data: {json.dumps({'error': str(e)})}\n\n"
+            )
 
     return Response(
         stream_with_context(generate()),
@@ -346,6 +379,7 @@ def retrieve_shared_chat(share_id):
         }), 500
 
 
+# Run Flask application locally
 if __name__ == "__main__":
 
     app.run(
